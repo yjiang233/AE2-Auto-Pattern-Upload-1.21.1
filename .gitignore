@@ -1,0 +1,8 @@
+build/
+run/
+run-server/
+.gradle/
+.idea/
+*.iml
+libs/*.jar
+!libs/README.md

@@ -1,0 +1,145 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev' version '2.0.91'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven {
+        name = 'LocalMaven'
+        url = uri("${rootDir}/local-maven")
+    }
+    maven {
+        name = 'NeoForged'
+        url = 'https://neoforged.forgecdn.net/releases'
+    }
+    maven {
+        name = 'MinecraftLibraries'
+        url = 'https://libraries.minecraft.net'
+    }
+    maven {
+        name = 'Parchment'
+        url = 'https://maven.parchmentmc.org'
+    }
+    mavenCentral()
+}
+
+def nativesDir = layout.buildDirectory.dir("natives")
+def prepareNatives = tasks.register("prepareNatives") {
+    outputs.dir(nativesDir)
+    doLast {
+        def out = nativesDir.get().asFile
+        out.mkdirs()
+        def cache = new File(System.getProperty("user.home"), ".gradle/caches/neoformruntime/artifacts/org/lwjgl")
+        if (!cache.isDirectory()) {
+            logger.warn("未找到 LWJGL natives 缓存: ${cache}")
+            return
+        }
+        def count = 0
+        cache.eachFileRecurse { File jar ->
+            if (!jar.name.endsWith("-natives-windows.jar")) return
+            new java.util.zip.ZipFile(jar).withCloseable { zip ->
+                def entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    def entry = entries.nextElement()
+                    if (entry.isDirectory() || !entry.name.endsWith(".dll")) continue
+                    def name = new File(entry.name).name
+                    def flat = new File(out, name)
+                    def nested = new File(out, "windows/x64/org/lwjgl/" + name)
+                    nested.parentFile.mkdirs()
+                    zip.getInputStream(entry).withCloseable { input ->
+                        flat.bytes = input.bytes
+                    }
+                    nested.bytes = flat.bytes
+                    count++
+                }
+            }
+        }
+        logger.lifecycle("已准备 ${count} 个 LWJGL 原生库 -> ${out}")
+    }
+}
+tasks.matching { it.name.startsWith("run") }.configureEach { dependsOn prepareNatives }
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+        }
+
+        server {
+            server()
+            programArgument '--nogui'
+        }
+
+        configureEach {
+            def lwjglCache = new File(System.getProperty("user.home"), ".gradle/caches/neoformruntime/artifacts/org/lwjgl")
+            if (lwjglCache.isDirectory()) {
+                systemProperty 'org.lwjgl.librarypath', nativesDir.get().asFile.absolutePath
+            }
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+}
+
+def modLibs = files(
+        "libs/appliedenergistics2-19.2.19.jar",
+        "libs/guideme-21.1.22.jar",
+        "libs/jei-1.21.1-neoforge-19.70.0.469.jar"
+)
+
+dependencies {
+    compileOnly modLibs
+    localRuntime modLibs
+}
+
+var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into "build/generated/sources/modMetadata"
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}
